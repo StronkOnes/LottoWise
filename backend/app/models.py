@@ -1,5 +1,23 @@
-from sqlalchemy import Column, Integer, String, Date, Float, JSON
+from sqlalchemy import Column, Integer, String, Date, Float, JSON, ForeignKey
+from sqlalchemy.orm import relationship
 from .database import Base
+
+class User(Base):
+    __tablename__ = "users"
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String, unique=True, index=True)
+    hashed_password = Column(String)
+    runs = relationship("PredictionRun", back_populates="owner")
+
+class PredictionRun(Base):
+    __tablename__ = "prediction_runs"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    game = Column(String)
+    method = Column(String)
+    picks = Column(JSON)
+    created_at = Column(String) # ISO format
+    owner = relationship("User", back_populates="runs")
 
 class Draw(Base):
     __tablename__ = "draws"
