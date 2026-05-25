@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List, Optional
+from pydantic import BaseModel
 from .database import engine, get_db, Base
 from .models import Draw, User, PredictionRun
 from .utils.isaac import ISAAC
@@ -14,6 +15,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from passlib.context import CryptContext
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
+
+# Pydantic models for request bodies
+class UserCreate(BaseModel):
+    username: str
+    password: str
 
 # Create tables
 Base.metadata.create_all(bind=engine)
@@ -29,7 +35,7 @@ app.add_middleware(
 )
 
 # Auth Config
-SECRET_KEY = "lottowise_secret_key"
+SECRET_KEY = "lottowise_secret_key_change_me"
 ALGORITHM = "HS256"
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
@@ -41,31 +47,43 @@ def verify_password(plain_password, hashed_password):
     return pwd_context.verify(plain_password, hashed_password)
 
 @app.post("/register")
-def register(username: str, password: str, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.username == username).first()
+def register(user_in: UserCreate, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.username == user_in.username).first()
     if user:
         raise HTTPException(status_code=400, detail="Username already registered")
-    new_user = User(username=username, hashed_password=get_password_hash(password))
+    new_user = User(username=user_in.username, hashed_password=get_password_hash(user_in.password))
     db.add(new_user)
     db.commit()
-    return {"status": "success"}
+    return {"status": "success", "username": user_in.username}
 
 @app.post("/token")
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     user = db.query(User).filter(User.username == form_data.username).first()
     if not user or not verify_password(form_data.password, user.hashed_password):
-        raise HTTPException(status_code=400, detail="Incorrect username or password")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     access_token = jwt.encode({"sub": user.username}, SECRET_KEY, algorithm=ALGORITHM)
     return {"access_token": access_token, "token_type": "bearer"}
 
 async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         username: str = payload.get("sub")
-        if username is None: raise HTTPException(status_code=401)
-    except JWTError: raise HTTPException(status_code=401)
+        if username is None:
+            raise credentials_exception
+    except JWTError:
+        raise credentials_exception
     user = db.query(User).filter(User.username == username).first()
-    if user is None: raise HTTPException(status_code=401)
+    if user is None:
+        raise credentials_exception
     return user
 
 @app.get("/")
@@ -113,7 +131,7 @@ def get_game_stats(game: str, db: Session = Depends(get_db)):
 def get_co_occurrence(game: str, db: Session = Depends(get_db)):
     draws = db.query(Draw).filter(Draw.game == game).all()
     if not draws: raise HTTPException(status_code=404)
-    n, m = (5, 50) if "Powerball" in game else (5, 36) if "Daily" in game else (6, 49)
+    m = 50 if "Powerball" in game else 36 if "Daily" in game else 49
     matrix = np.zeros((m + 1, m + 1))
     for d in draws:
         nums = [int(x) for x in d.numbers.split(",")]
@@ -126,7 +144,9 @@ def get_co_occurrence(game: str, db: Session = Depends(get_db)):
 
 @app.get("/predict/{game}")
 def predict_numbers(game: str, method: str = "combined", db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    n, m = (5, 50) if "Powerball" in game else (5, 36) if "Daily" in game else (6, 49)
+    n = 5 if ("Powerball" in game or "Daily" in game) else 6
+    m = 50 if "Powerball" in game else 36 if "Daily" in game else 49
+    
     draws = db.query(Draw).filter(Draw.game == game).order_by(Draw.draw_date.asc()).all()
     
     if not draws or method == "isaac":
@@ -144,13 +164,13 @@ def predict_numbers(game: str, method: str = "combined", db: Session = Depends(g
         
         candidates = []
         for _ in range(1000):
-            picks = sorted(np.random.choice(indices, size=n, replace=False, p=p_norm).tolist())
+            picks_idx = np.random.choice(indices, size=n, replace=False, p=p_norm)
+            picks = sorted([int(p) for p in picks_idx.tolist()])
             if DeltaSystem.is_valid_delta(DeltaSystem.get_deltas(picks), m_dynamic):
                 candidates.append(picks)
                 if len(candidates) >= 1: break
-        picks = candidates[0] if candidates else sorted(np.random.choice(indices, size=n, replace=False, p=p_norm).tolist())
+        picks = candidates[0] if candidates else sorted([int(p) for p in np.random.choice(indices, size=n, replace=False, p=p_norm).tolist()])
 
-    # Save run
     new_run = PredictionRun(user_id=current_user.id, game=game, method=method, picks=picks, created_at=datetime.now().isoformat())
     db.add(new_run)
     db.commit()

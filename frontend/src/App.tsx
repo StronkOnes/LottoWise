@@ -57,10 +57,6 @@ function App() {
   const [sysLines, setSysLines] = useState(10);
   const [systemResult, setSystemResult] = useState<number[][]>([]);
 
-  const axiosConfig = useMemo(() => ({
-    headers: { Authorization: `Bearer ${token}` }
-  }), [token]);
-
   useEffect(() => {
     localStorage.setItem('theme', theme);
     if (theme === 'dark') document.documentElement.classList.add('dark');
@@ -73,7 +69,7 @@ function App() {
       fetchRuns();
       if (activeTab === 'visualizations') fetchCoOccurrence();
     }
-  }, [activeGame, activeTab, isLoggedIn]);
+  }, [activeGame, activeTab, isLoggedIn, token]);
 
   const fetchStats = async () => {
     try {
@@ -91,43 +87,79 @@ function App() {
 
   const fetchRuns = async () => {
     try {
-      const res = await axios.get(`${API_BASE}/runs`, axiosConfig);
+      const res = await axios.get(`${API_BASE}/runs`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
       setRuns(res.data);
-    } catch (err) { console.error(err); }
+    } catch (err) { 
+      console.error(err);
+      if (axios.isAxiosError(err) && err.response?.status === 401) {
+        handleLogout();
+      }
+    }
   };
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
+    setLoading(true);
     try {
-      const formData = new FormData();
+      const formData = new URLSearchParams();
       formData.append('username', username);
       formData.append('password', password);
-      const res = await axios.post(`${API_BASE}/token`, formData);
+      
+      const res = await axios.post(`${API_BASE}/token`, formData, {
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+      });
+      
       const newToken = res.data.access_token;
       localStorage.setItem('token', newToken);
       setToken(newToken);
       setIsLoggedIn(true);
-    } catch (err) { alert("Login failed"); }
+    } catch (err) { 
+      console.error(err);
+      alert("Login failed: Incorrect username or password"); 
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleRegister = async () => {
+    if (!username || !password) {
+      alert("Please enter both username and password");
+      return;
+    }
+    setLoading(true);
     try {
-      await axios.post(`${API_BASE}/register`, null, { params: { username, password } });
-      alert("Registered! Now login.");
-    } catch (err) { alert("Registration failed"); }
+      // Body as JSON
+      await axios.post(`${API_BASE}/register`, { 
+        username: username, 
+        password: password 
+      });
+      alert("Successfully registered! You can now sign in.");
+    } catch (err) { 
+      console.error(err);
+      if (axios.isAxiosError(err) && err.response?.data?.detail) {
+        alert(`Registration failed: ${err.response.data.detail}`);
+      } else {
+        alert("Registration failed: Connection error or server issue");
+      }
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleLogout = () => {
     localStorage.removeItem('token');
     setIsLoggedIn(false);
     setToken('');
+    setRuns([]);
   };
 
   const getPrediction = async () => {
     setLoading(true);
     try {
       await axios.get(`${API_BASE}/predict/${activeGame}`, {
-        ...axiosConfig,
+        headers: { Authorization: `Bearer ${token}` },
         params: { method: engine }
       });
       fetchRuns();
@@ -137,7 +169,9 @@ function App() {
 
   const deleteRun = async (id: number) => {
     try {
-      await axios.delete(`${API_BASE}/runs/${id}`, axiosConfig);
+      await axios.delete(`${API_BASE}/runs/${id}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
       fetchRuns();
     } catch (err) { console.error(err); }
   };
@@ -180,20 +214,22 @@ function App() {
           <form onSubmit={handleLogin} className="space-y-4">
             <div className="space-y-2">
               <label className="text-xs font-bold text-slate-500 uppercase ml-1">Username</label>
-              <input type="text" value={username} onChange={(e) => setUsername(e.target.value)} className="w-full bg-slate-900/50 border border-white/10 rounded-xl px-5 py-3 focus:border-gold-500 outline-none transition-all placeholder:text-slate-700" placeholder="stronkoner" />
+              <input type="text" required value={username} onChange={(e) => setUsername(e.target.value)} className="w-full bg-slate-900/50 border border-white/10 rounded-xl px-5 py-3 focus:border-gold-500 outline-none transition-all placeholder:text-slate-700 font-medium" placeholder="stronkoner" />
             </div>
             <div className="space-y-2">
               <label className="text-xs font-bold text-slate-500 uppercase ml-1">Password</label>
-              <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} className="w-full bg-slate-900/50 border border-white/10 rounded-xl px-5 py-3 focus:border-gold-500 outline-none transition-all placeholder:text-slate-700" placeholder="••••••••" />
+              <input type="password" required value={password} onChange={(e) => setPassword(e.target.value)} className="w-full bg-slate-900/50 border border-white/10 rounded-xl px-5 py-3 focus:border-gold-500 outline-none transition-all placeholder:text-slate-700 font-medium" placeholder="••••••••" />
             </div>
             <div className="pt-4 flex gap-4">
-              <button type="submit" className="flex-1 bg-gold-500 hover:bg-gold-600 text-slate-950 font-bold py-3 rounded-xl transition-all shadow-lg shadow-gold-500/10">Sign In</button>
-              <button type="button" onClick={handleRegister} className="flex-1 bg-white/5 hover:bg-white/10 text-white font-bold py-3 rounded-xl transition-all border border-white/10">Register</button>
+              <button type="submit" disabled={loading} className="flex-1 bg-gold-500 hover:bg-gold-600 text-slate-950 font-bold py-3 rounded-xl transition-all shadow-lg shadow-gold-500/10 disabled:opacity-50">
+                {loading ? 'Processing...' : 'Sign In'}
+              </button>
+              <button type="button" onClick={handleRegister} disabled={loading} className="flex-1 bg-white/5 hover:bg-white/10 text-white font-bold py-3 rounded-xl transition-all border border-white/10 disabled:opacity-50">Register</button>
             </div>
           </form>
           
-          <p className="text-center text-[10px] text-slate-500 leading-relaxed px-4">
-            By signing in, you access the 1024-byte entropy ISAAC engine and the Markov transition matrix repository.
+          <p className="text-center text-[10px] text-slate-500 leading-relaxed px-4 uppercase font-bold tracking-widest opacity-50">
+            Secure Cryptographic Infrastructure Active
           </p>
         </div>
       </div>
@@ -328,7 +364,7 @@ function App() {
                     <div className="flex gap-3 opacity-0 group-hover:opacity-100 transition-opacity">
                       <button onClick={() => { 
                          setSysM(run.game === 'Daily Lotto' ? 36 : 49);
-                         setSysN(run.game === 'Lotto' ? 6 : 5);
+                         setSysN(run.game.includes('Lotto') && !run.game.includes('Daily') ? 6 : 5);
                          setActiveTab('builder');
                       }} className="p-2 hover:bg-blue-500/10 text-blue-400 rounded-lg transition-all" title="Add to System Builder">
                         <Plus size={20} />
@@ -419,24 +455,24 @@ function App() {
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-1">
                   <label className="text-[10px] font-bold text-slate-500 uppercase px-1">Draw Size (n)</label>
-                  <input type="number" value={sysN} onChange={(e) => setSysN(parseInt(e.target.value))} className="w-full bg-slate-900 border border-white/10 rounded-xl px-4 py-2 text-sm focus:border-gold-500 outline-none" />
+                  <input type="number" value={sysN} onChange={(e) => setSysN(parseInt(e.target.value))} className="w-full bg-slate-900 border border-white/10 rounded-xl px-4 py-2 text-sm focus:border-gold-500 outline-none transition-all" />
                 </div>
                 <div className="space-y-1">
                   <label className="text-[10px] font-bold text-slate-500 uppercase px-1">Urn Size (m)</label>
-                  <input type="number" value={sysM} onChange={(e) => setSysM(parseInt(e.target.value))} className="w-full bg-slate-900 border border-white/10 rounded-xl px-4 py-2 text-sm focus:border-gold-500 outline-none" />
+                  <input type="number" value={sysM} onChange={(e) => setSysM(parseInt(e.target.value))} className="w-full bg-slate-900 border border-white/10 rounded-xl px-4 py-2 text-sm focus:border-gold-500 outline-none transition-all" />
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-1">
                   <label className="text-[10px] font-bold text-slate-500 uppercase px-1">Win Threshold (k)</label>
-                  <input type="number" value={sysK} onChange={(e) => setSysK(parseInt(e.target.value))} className="w-full bg-slate-900 border border-white/10 rounded-xl px-4 py-2 text-sm focus:border-gold-500 outline-none" />
+                  <input type="number" value={sysK} onChange={(e) => setSysK(parseInt(e.target.value))} className="w-full bg-slate-900 border border-white/10 rounded-xl px-4 py-2 text-sm focus:border-gold-500 outline-none transition-all" />
                 </div>
                 <div className="space-y-1">
                   <label className="text-[10px] font-bold text-slate-500 uppercase px-1">Target Lines</label>
-                  <input type="number" value={sysLines} onChange={(e) => setSysLines(parseInt(e.target.value))} className="w-full bg-slate-900 border border-white/10 rounded-xl px-4 py-2 text-sm focus:border-gold-500 outline-none" />
+                  <input type="number" value={sysLines} onChange={(e) => setSysLines(parseInt(e.target.value))} className="w-full bg-slate-900 border border-white/10 rounded-xl px-4 py-2 text-sm focus:border-gold-500 outline-none transition-all" />
                 </div>
               </div>
-              <button onClick={generateSystem} disabled={loading} className="w-full py-4 bg-gold-500 hover:bg-gold-600 text-slate-950 font-bold rounded-2xl transition-all shadow-lg shadow-gold-500/10 active:scale-95">
+              <button onClick={generateSystem} disabled={loading} className="w-full py-4 bg-gold-500 hover:bg-gold-600 text-slate-950 font-bold rounded-2xl transition-all shadow-lg shadow-gold-500/10 active:scale-95 disabled:opacity-50">
                 {loading ? 'Calculating...' : 'Build Exclusive System'}
               </button>
               <div className="p-4 bg-blue-500/10 border border-blue-500/20 rounded-2xl flex gap-3">
@@ -459,7 +495,7 @@ function App() {
                       <span className="text-[10px] font-bold text-slate-600">#{idx + 1}</span>
                       <div className="flex gap-1.5">
                         {line.map((num, i) => (
-                          <span key={i} className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold ${theme === 'dark' ? 'bg-slate-800' : 'bg-slate-50 text-slate-600'}`}>{num}</span>
+                          <span key={i} className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold ${theme === 'dark' ? 'bg-slate-800' : 'bg-slate-100 text-slate-600 border border-slate-200'}`}>{num}</span>
                         ))}
                       </div>
                     </div>
